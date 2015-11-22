@@ -1,0 +1,173 @@
+---
+title: "PML_project"
+author: "S_B"
+date: "November 22, 2015"
+output: pdf_document
+---
+
+```{r global_options}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, warning=FALSE, message=FALSE)
+```
+
+```{r Packages}
+library(caret)
+library(data.table)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(randomForest)
+library(gbm)
+library(e1071)
+library(hydroGOF)
+```
+
+```{r Load_data}
+setwd("C:\\Sachin\\MyDocs\\Study\\MOOC_Online Courses\\Practical Machine Learning_Coursera\\Project")
+pmltrain_org = read.csv("pml-training.csv",stringsAsFactors = F)# ,na.strings=c(""))
+pmltest_org  = read.csv("pml-testing.csv",stringsAsFactors = F) # ,na.strings=c(""))
+```
+
+```{r Look Na counts}
+na_count = sapply(pmltrain_org, function(y) sum(length(which(is.na(y)))))
+na_count = setDT(data.frame(na_count), keep.rownames = TRUE)[]
+head(na_count)
+```
+
+```{r Look variance}
+var_vbl = sapply(pmltrain_org, function(y) var(y))
+var_vbl  =setDT(data.frame(var_vbl), keep.rownames = TRUE)[]
+head(var_vbl)
+```
+
+```{r For_Variable_selection }
+## Create combined data with variable names, na count and variance values
+vbl_select = cbind(na_count,"variance"=var_vbl$var_vbl)
+head(vbl_select)
+colnames(vbl_select)[1]="Variable"
+# Spotcheck few values # vbl_select[which(vbl_select$Variable=="magnet_forearm_y")] #259461
+
+## Arrange data in decreasing order of variance
+vbl_select = vbl_select[order(-variance),]
+## Create data for variable selection where na count is non zero and non-na variance
+vbl_select_final = subset(vbl_select,vbl_select$na_count==0 & !is.na(vbl_select$variance))
+# Variables should be selected from this dataset
+# Here is the list of variables that are used into the model
+## To iterate with model variables----
+model_variables = c("magnet_forearm_y",
+                    "magnet_arm_x",
+                    "magnet_forearm_z",
+                    "magnet_forearm_x",
+                    "magnet_dumbbell_x",
+                    "magnet_dumbbell_y",
+                    "magnet_arm_z",
+                    #"num_window",
+                    "magnet_arm_y",
+                    "accel_forearm_y",
+                    "accel_arm_x",
+                    "accel_forearm_x",
+                    "magnet_dumbbell_z",
+                    "accel_forearm_z",
+                    "accel_arm_z",
+                    "accel_arm_y",
+                    "accel_dumbbell_z",
+                    "roll_forearm",
+                    "yaw_forearm",
+                    "accel_belt_z",
+                    "yaw_belt",
+                    "yaw_dumbbell",
+                    "accel_dumbbell_y",
+                    "roll_arm",
+                    "yaw_arm",
+                    "roll_dumbbell",
+                    "accel_dumbbell_x",
+                    "magnet_belt_z",
+                    "magnet_belt_x",
+                    "roll_belt",
+                    "pitch_dumbbell",
+                    "magnet_belt_y",
+                    "pitch_arm",
+                    "accel_belt_x",
+                    "accel_belt_y",
+                    "pitch_forearm",
+                    "pitch_belt",
+                    "total_accel_arm",
+                    "total_accel_dumbbell",
+                    "total_accel_forearm",
+                    "total_accel_belt",
+                    "classe")
+##----
+```
+
+```{r Create train and test data}
+pmltrain = pmltrain_org[,(names(pmltrain_org) %in% model_variables)]
+pmltest  =  pmltest_org[,(names(pmltest_org) %in% model_variables)]
+
+## Create 70/30 split from original training data
+inTrain = createDataPartition(y = pmltrain$classe, p = 0.7, list = F)
+training = pmltrain[inTrain,]; testing = pmltrain[-inTrain,]
+```
+
+```{r Check correlations}
+## Check correlations
+cormatrix = cor(training[,-41])
+# write.csv(cormatrix, file = "cormatrix.csv")
+levelplot(cormatrix)
+```
+
+```{r CART model}
+set.seed(123)
+## Starting with CART model without any tuning
+pmlCART = rpart(classe ~ ., data = training, method = "class")
+prp(pmlCART)
+cart.pred.test = predict(pmlCART, newdata = testing, type = "class")
+confusionMatrix(testing$classe, cart.pred.test) # Accuracy 0.73
+
+## Define cross-validation experiment for CART
+fitControl = trainControl( method = "cv", number = 10 )
+cartGrid = expand.grid( .cp = (1:50)*0.0008)
+# Perform the cross validation
+train(classe ~ ., data = training, method="rpart", trControl=fitControl, tuneGrid=cartGrid)
+# Create a new CART model
+pmlCART.CV = rpart(classe ~ ., method="class",data= training, control=rpart.control(cp=0.0008))
+# Make predictions
+predictCV = predict(pmlCART.CV, newdata = testing, type = "class")
+confusionMatrix(testing$classe, predictCV) # Accuracy 0.90
+```
+
+```{r Random Forest model}
+## Try RF model 
+training$classe = as.factor(training$classe)
+testing$classe = as.factor(testing$classe)
+pmlRF = randomForest(classe ~ ., data = training)
+rf.pred.test = predict(pmlRF, newdata = testing)
+confusionMatrix(testing$classe, rf.pred.test) # Accuracy 0.9935
+# RF was able to improve test set accuracy by 10% over tuned CART model
+# Calculate variable importance and corresponding plot
+round(importance(pmlRF), 0)		
+varImpPlot(pmlRF, sort=TRUE)
+```
+
+```{r OOS error rate}
+# We will use this RF model (pmlRF) for final test set predictions
+# Estimated OOS error rate is (1-0.9935)*100 = 0.65
+```
+
+```{r Final predictions}
+## Perform final predictions on 20 cases
+rf.final.pred = predict(pmlRF, newdata = pmltest)
+rf.final.pred
+# 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 
+# B  A  B  A  A  E  D  B  A  A  B  C  B  A  E  E  A  B  B  B
+```
+
+```{r Submission text files}
+## Create submission text files
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(rf.final.pred)
+```
